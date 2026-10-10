@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.5.1';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -1131,6 +1131,21 @@
       'ロゴ画像が見つからないため、動画にロゴが入りません。\n\n【登録方法】\n① ロゴ画像のファイル名を「logo.png」にする（背景が透明なPNGを推奨）\n② GitHubのリポジトリを開き「Add file」→「Upload files」で logo.png をアップロードする\n③ 1〜2分待ってから、このアプリを開き直す\n\n詳しくは README.md をご覧ください。');
   }
 
+  // タップした位置にピントを合わせる機能を、このブラウザが提供しているかどうか（調査用の表示）
+  function focusInfo() {
+    var sc = {}, cap = {};
+    try { sc = navigator.mediaDevices.getSupportedConstraints ? navigator.mediaDevices.getSupportedConstraints() : {}; } catch (e) {}
+    try {
+      var vt = state.stream && state.stream.getVideoTracks()[0];
+      cap = (vt && vt.getCapabilities) ? vt.getCapabilities() : {};
+    } catch (e2) {}
+    var modes = (cap.focusMode && cap.focusMode.length) ? cap.focusMode.join('/') : 'なし';
+    var dist = cap.focusDistance ? (cap.focusDistance.min + '〜' + cap.focusDistance.max) : 'なし';
+    var ok = !!sc.pointsOfInterest && !!(cap.focusMode && cap.focusMode.length);
+    return 'ピント位置の指定: ' + (ok ? '対応' : '非対応') +
+      '（位置指定: ' + (sc.pointsOfInterest ? 'あり' : 'なし') + '／ピントの方式: ' + modes + '／距離指定: ' + dist + '）';
+  }
+
   function showInfo() {
     if (state.recording) return;
     var vw = video.videoWidth, vh = video.videoHeight, fr = '';
@@ -1152,6 +1167,7 @@
         (state.lensMethod === 'device' ? (state.uwZoomCap ? '／超広角側ズーム ' + state.uwZoomCap.min + '〜' + state.uwZoomCap.max : '／途中の倍率は映像を拡大') : '') +
         (state.lensMethod ? '／現在 ' + state.zoomU.toFixed(2) + '×' : ''),
       'カメラ一覧: ' + (state.camLabels.length ? state.camLabels.join('、') : '取得なし'),
+      focusInfo(),
       CFG.autoRotate === true
         ? '撮影の向き: 自動判定（' + (state.sensor === 'granted'
           ? '有効／現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)]
