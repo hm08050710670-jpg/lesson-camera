@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.5.2';
+  var VERSION = '1.6.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -34,6 +34,8 @@
     recMime: '',
     canvasStream: null,
     chunks: [],
+    chunkMs: 0,              // 録画を途中で区切る間隔（0 = 区切らない）
+    onRecData: null,
     recStats: null,          // 録画中のなめらかさの計測（調査用）
     lastRec: null,           // 前回の録画の計測結果
     recStart: 0,
@@ -60,7 +62,9 @@
   };
 
   /* ───────── 端末内の一時保管（IndexedDB） ─────────
-   * 録画データを1秒ごとに書き込み、アプリが落ちても撮影済みの動画を復元できるようにする。
+   * 撮影した動画・写真を保存し、保存前にアプリを閉じてしまっても復元できるようにする。
+   * （録画の途中で区切って退避すると、区切りのたびに映像が飛ぶことが実機の動画で確認されたため、
+   *   標準では録画が終わった時にまとめて保存する。設定 video.chunkSeconds で途中退避に戻せる）
    * 保管するのは「未保存の1件」だけ。撮影に戻る／次の撮影を始める時に削除する。 */
   var DB = {
     _p: null,
@@ -891,11 +895,15 @@
         if (e.data && e.data.size > 0) {
           state.chunks.push(e.data);
           if (state.recStats) { state.recStats.bytes += e.data.size; state.recStats.chunks++; }
-          DB.addChunk(e.data);   // 1秒ごとに端末内へ退避（異常終了時の復元用）
+          if (state.chunkMs > 0) DB.addChunk(e.data);   // 途中退避が有効な時だけ、区切りごとに端末内へ保存
+          if (state.stopping && state.onRecData) state.onRecData();
         }
       };
       rec.onerror = function (e) { console.warn('[GGC] 録画エラー', e); stopRecording('error'); };
-      try { rec.start(1000); }
+      // 録画の途中で区切らない（区切るたびにiPhone側の書き出しで映像が約0.4秒飛ぶため）。
+      // 設定で video.chunkSeconds を1以上にした場合だけ、その秒数ごとに区切って退避する
+      state.chunkMs = Math.max(0, Math.round((CFG.video.chunkSeconds || 0) * 1000));
+      try { if (state.chunkMs > 0) rec.start(state.chunkMs); else rec.start(); }
       catch (e) {
         cleanupRecording();
         state.busy = false;
@@ -947,15 +955,18 @@
     state.recElapsed = (performance.now() - state.recStart) / 1000;
     clearInterval(state.timer); state.timer = null;
     showProgress('動画を仕上げています…');
-    var rec = state.recorder, done = false, to;
+    var rec = state.recorder, done = false, to, dataTo;
     var finish = function () {
       if (done) return;
       done = true;
-      clearTimeout(to);
+      clearTimeout(to); clearTimeout(dataTo);
+      state.onRecData = null;
       finalizeRecording(reason);
     };
     rec.onstop = finish;
-    to = setTimeout(finish, 6000);   // 停止通知が来ない場合の保険
+    // 録画データは停止後にまとめて届く。長い動画では数秒かかるため、届くまで待つ
+    state.onRecData = function () { clearTimeout(dataTo); dataTo = setTimeout(finish, 1500); };   // データは届いたのに停止通知が来ない場合の保険
+    to = setTimeout(finish, 90000);                                                             // 何も届かない場合の保険
     try { if (rec.state !== 'inactive') rec.stop(); else finish(); }
     catch (e) { finish(); }
   }
@@ -994,6 +1005,7 @@
     meta.complete = true;
     meta.duration = state.recElapsed;
     DB.setMeta(meta);
+    if (!(state.chunkMs > 0)) DB.addChunk(blob);   // 保存前に閉じても復元できるよう、完成した動画を端末内に保管
     var item = {
       kind: 'video', blob: blob, mime: type, createdAt: meta.createdAt, w: meta.w, h: meta.h,
       duration: meta.duration, complete: true, logo: meta.logo
