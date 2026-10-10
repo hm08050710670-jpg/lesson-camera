@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>GOLF GUTS CAMERA</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GUTS CAMERA">
+<meta name="application-name" content="GUTS CAMERA">
+<meta name="theme-color" content="#000000">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 撮影画面 -->
+<div id="app" class="mode-video">
+  <header id="topbar">
+    <button id="titleBtn" class="title" type="button" aria-label="アプリ情報">GOLF GUTS <b>CAMERA</b></button>
+    <div id="recBadge" class="rec-badge" hidden><i></i><span id="recTime">0:00</span></div>
+  </header>
+
+  <main id="stage">
+    <video id="cam" playsinline webkit-playsinline muted autoplay></video>
+    <canvas id="comp"></canvas>
+    <div id="flash"></div>
+    <div id="badges">
+      <button id="logoNotice" type="button" hidden>ロゴ未登録（タップで登録方法）</button>
+      <span id="micBadge" hidden>音声なし</span>
+      <span id="rawBadge" hidden>ロゴなし録画</span>
+    </div>
+    <div id="camMsg" hidden>
+      <h2 id="camMsgTitle"></h2>
+      <p id="camMsgText"></p>
+      <button id="camRetry" type="button" class="btn-primary">もう一度試す</button>
+    </div>
+  </main>
+
+  <footer id="controls">
+    <div id="modeSwitch">
+      <button type="button" data-mode="photo">写真</button>
+      <button type="button" data-mode="video">ビデオ</button>
+    </div>
+    <div class="shutter-row">
+      <span class="side"></span>
+      <button id="shutter" type="button" aria-label="撮影"><i></i></button>
+      <button id="flip" type="button" class="side" aria-label="カメラ切り替え">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+          <path d="M4 4v4h4"/>
+          <path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+          <path d="M20 20v-4h-4"/>
+        </svg>
+      </button>
+    </div>
+  </footer>
+</div>
+
+<!-- 撮影後の確認画面 -->
+<section id="review" hidden>
+  <header class="review-top">
+    <button id="backBtn" type="button">‹ 撮影に戻る</button>
+    <span id="reviewInfo"></span>
+  </header>
+  <div id="reviewMedia"></div>
+  <footer class="review-bottom">
+    <p id="reviewStatus"></p>
+    <button id="saveBtn" type="button" class="btn-primary btn-big">写真に保存</button>
+    <p id="saveHint" class="hint"></p>
+    <a id="fallbackLink" class="btn-secondary" hidden>ファイルとして保存（代替）</a>
+  </footer>
+</section>
+
+<!-- 処理中表示 -->
+<div id="progress" hidden>
+  <div class="spinner"></div>
+  <p id="progressText"></p>
+</div>
+
+<!-- ダイアログ -->
+<div id="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true">
+    <h2 id="modalTitle"></h2>
+    <p id="modalText"></p>
+    <div id="modalBtns"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<noscript><p style="color:#fff;padding:40px 20px">このアプリを使うには JavaScript を有効にしてください。</p></noscript>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
