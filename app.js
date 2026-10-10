@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.1';
+  var VERSION = '1.4.2';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -42,7 +42,7 @@
     sensor: 'unknown',       // 傾きセンサー: 'unknown' | 'pending' | 'granted' | 'denied' | 'unsupported'
     sensorInit: false,
     devAngle: 0,             // 本体の向き: 0=縦 / 90=左に倒す / -90=右に倒す / 180=逆さ
-    manualRot: 0,            // 手動で選んだ向き: 0=縦 / 90=横（上側を左へ） / -90=横（上側を右へ）
+    manualRot: 0,            // 手動で選んだ向き: 0=縦 / 90=横（本体の上側を左へ向けて構える）
     recRot: 0,               // 録画開始時に固定した回転
     shownRot: 0,
     lens: '1',               // 使用中のカメラ: '1'（標準） | '0.5'（超広角）
@@ -245,7 +245,7 @@
   function loadManualRot() {
     try {
       var v = parseInt(window.localStorage.getItem('ggc-rot'), 10);
-      if (v === 90 || v === -90) state.manualRot = v;
+      if (v === 90) state.manualRot = 90;   // 横向きは「上側を左へ」の1方向のみ（以前の「右へ」は縦向きに戻す）
     } catch (e) {}
   }
   function updateRotUI() {
@@ -256,17 +256,15 @@
     // 本体を構えた人から見て絵と文字が正しい向きになるよう、ボタンごと回す（左上の角を基準に、左端に沿わせる）
     btn.style.transform = r === 90 ? 'rotate(90deg) translateY(-100%)'
       : r === -90 ? 'rotate(-90deg) translateX(-100%)' : '';
-    btn.setAttribute('aria-label', '撮影の向き: ' + (r === 0 ? '縦' : r === 90 ? '横（本体の上側を左へ）' : '横（本体の上側を右へ）'));
+    btn.setAttribute('aria-label', '撮影の向き: ' + (r === 0 ? '縦' : '横（本体の上側を左へ）'));
   }
   function cycleManualRot() {
     if (state.recording || state.busy || CFG.autoRotate === true) return;
-    state.manualRot = state.manualRot === 0 ? 90 : (state.manualRot === 90 ? -90 : 0);
+    state.manualRot = state.manualRot === 0 ? 90 : 0;
     try { window.localStorage.setItem('ggc-rot', String(state.manualRot)); } catch (e) {}
     updateRotUI();
     if (state.mode === 'video') drawFrame();
-    toast(state.manualRot === 0 ? '縦向きで撮影します'
-      : state.manualRot === 90 ? '横向き：本体の上側を左に向けて構えます'
-      : '横向き：本体の上側を右に向けて構えます', 2200);
+    toast(state.manualRot === 0 ? '縦向きで撮影します' : '横向き：本体の上側を左に向けて構えます', 2200);
   }
   function activeRot() { return state.sizeLocked ? state.recRot : effectiveRot(); }
 
@@ -1092,7 +1090,7 @@
           ? '有効／現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)]
           : state.sensor === 'denied' ? '無効・センサー未許可'
           : state.sensor === 'unsupported' ? '非対応' : '最初の撮影時に確認') + '）'
-        : '撮影の向き: ボタンで選択（現在: ' + (state.manualRot === 0 ? '縦' : state.manualRot === 90 ? '横・上側を左へ' : '横・上側を右へ') + '）',
+        : '撮影の向き: ボタンで選択（現在: ' + (state.manualRot === 0 ? '縦' : '横・上側を左へ') + '）',
       '保存方法: ' + (navigator.share && navigator.canShare ? '共有メニュー' : '代替（ファイル保存）'),
       '起動方法: ' + ((navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) ? 'ホーム画面' : 'ブラウザ')
     ];
