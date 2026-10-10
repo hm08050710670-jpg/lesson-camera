@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.1';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -253,8 +253,9 @@
     btn.hidden = CFG.autoRotate === true;
     btn.classList.toggle('on', r !== 0);
     $('rotLabel').textContent = r === 0 ? '縦向き' : '横向き';
-    // 本体を構えた人から見て文字が正しい向きになるよう、ボタンの中身も回す
-    $('rotIn').style.transform = r === 0 ? '' : 'rotate(' + r + 'deg)';
+    // 本体を構えた人から見て絵と文字が正しい向きになるよう、ボタンごと回す（左上の角を基準に、左端に沿わせる）
+    btn.style.transform = r === 90 ? 'rotate(90deg) translateY(-100%)'
+      : r === -90 ? 'rotate(-90deg) translateX(-100%)' : '';
     btn.setAttribute('aria-label', '撮影の向き: ' + (r === 0 ? '縦' : r === 90 ? '横（本体の上側を左へ）' : '横（本体の上側を右へ）'));
   }
   function cycleManualRot() {
