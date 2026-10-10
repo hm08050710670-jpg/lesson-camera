@@ -84,6 +84,7 @@ button:disabled { opacity: .35; }
   min-height: 0;
   overflow: hidden;
   background: #000;
+  touch-action: none;   /* 2本指のピンチはズーム操作に使う（画面自体は拡大させない） */
 }
 #cam, #comp {
   position: absolute;
