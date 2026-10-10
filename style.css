@@ -230,6 +230,45 @@ button:disabled { opacity: .35; }
   .shutter-row span.side { display: none; }
 }
 
+/* ───────── 縦向き：映像を画面いっぱいに表示し、操作ボタンは映像の上に重ねる ───────── */
+@media (orientation: portrait) {
+  #app { display: block; padding: 0; }
+  #stage { position: absolute; top: var(--sat); left: 0; right: 0; bottom: 0; }
+  #topbar {
+    position: absolute;
+    z-index: 3;
+    top: calc(6px + var(--sat));
+    left: 0; right: 0;
+    height: 30px;
+    pointer-events: none;
+  }
+  #topbar > * { pointer-events: auto; }
+  .title { background: rgba(0, 0, 0, .4); border-radius: 999px; padding: 6px 12px; }
+  #badges { top: 44px; }
+  #controls {
+    position: absolute;
+    z-index: 3;
+    left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  #controls button { pointer-events: auto; }
+  #modeSwitch {
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, .42);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+  /* 右下はロゴが入る位置なので、カメラ切替ボタンは撮影ボタンの左に置く */
+  .shutter-row { flex-direction: row-reverse; }
+  #flip {
+    background: rgba(0, 0, 0, .42);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+  #flip:active { background: rgba(255, 255, 255, .3); }
+}
+
 /* ───────── 確認画面 ───────── */
 #review {
   position: fixed; inset: 0; z-index: 10;

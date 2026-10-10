@@ -56,6 +56,17 @@ window.GGC_CONFIG = {
     logo: false
   },
 
+  // ───── 横向きの自動判定 ─────
+  // true = 本体の傾きセンサーで向きを判定する
+  //        （iPhoneの「画面縦向きのロック」がオンでも、横に構えれば横動画として保存されます）
+  autoRotate: true,
+  // 横に構えて撮った動画が「上下逆さま」に保存される場合だけ true にしてください
+  autoRotateReverse: false,
+
+  // ───── 保存 ─────
+  // true = 撮影が終わったら、共有メニューを自動で開く
+  autoShare: true,
+
   // 起動時のモード： 'video'（ビデオ） / 'photo'（写真）
   defaultMode: 'video'
 };

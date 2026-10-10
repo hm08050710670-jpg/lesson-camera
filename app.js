@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -38,7 +38,12 @@
     timer: null,
     pending: null,           // 確認画面に表示中のデータ
     sharing: false,
-    wakeLock: null
+    wakeLock: null,
+    sensor: 'unknown',       // 傾きセンサー: 'unknown' | 'pending' | 'granted' | 'denied' | 'unsupported'
+    sensorInit: false,
+    devAngle: 0,             // 本体の向き: 0=縦 / 90=左に倒す / -90=右に倒す / 180=逆さ
+    recRot: 0,               // 録画開始時に固定した回転
+    shownRot: 0
   };
 
   /* ───────── 端末内の一時保管（IndexedDB） ─────────
@@ -195,6 +200,89 @@
     $('rawBadge').hidden = !state.rawMode;
   }
 
+  /* ───────── 本体の向き（傾きセンサー） ─────────
+   * iPhoneの「画面縦向きのロック」がオンだと、本体を横にしても画面も映像も縦向きのまま届く。
+   * そこで傾きセンサーで本体の向きを判定し、横に構えた時は映像を回転して「正しい横動画」として保存する。 */
+  var sensorPromise = null, pendCand = 0, pendSince = 0;
+
+  function normAngle(a) { a = ((a % 360) + 360) % 360; return a > 180 ? a - 360 : a; }
+
+  function uiAngle() {
+    var a = 0;
+    try {
+      if (screen.orientation && typeof screen.orientation.angle === 'number') a = screen.orientation.angle;
+      else if (typeof window.orientation === 'number') a = window.orientation;
+    } catch (e) {}
+    return normAngle(a);
+  }
+
+  // いま映像に掛けるべき回転（度）
+  function effectiveRot() {
+    if (CFG.autoRotate === false || state.sensor !== 'granted' || state.rawMode) return 0;
+    if (uiAngle() !== 0) return 0;   // 画面自体が回転している時（ロックがオフ）は、映像が最初から正しい向きで届く
+    return state.devAngle;
+  }
+  function activeRot() { return state.sizeLocked ? state.recRot : effectiveRot(); }
+
+  function onDeviceOrientation(e) {
+    if (e.beta == null || e.gamma == null) return;
+    var b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+    // 画面の面内で「上（重力の反対）」がどちらを向いているか
+    var ux = -Math.sin(g) * Math.cos(b), uy = Math.sin(b);
+    if (CFG.autoRotateReverse) ux = -ux;
+    if (ux * ux + uy * uy < 0.25) return;   // 水平に近い（机に置いた等）時は直前の向きを維持
+    var ang = Math.atan2(ux, uy) * 180 / Math.PI;
+    var cand = state.devAngle;
+    if (!state.sensorInit || Math.abs(normAngle(ang - cand)) > 60) cand = normAngle(Math.round(ang / 90) * 90);
+    var now = performance.now();
+    if (!state.sensorInit) { state.sensorInit = true; state.devAngle = pendCand = cand; pendSince = now; return; }
+    if (cand !== pendCand) { pendCand = cand; pendSince = now; return; }
+    // 0.5秒続いたら向きが変わったと判断する（一瞬の傾きで切り替わらないように）
+    if (cand !== state.devAngle && now - pendSince >= 500) state.devAngle = cand;
+  }
+
+  // センサーの利用開始。iPhoneでは利用者の操作（タップ）をきっかけに許可を求める必要がある
+  function ensureSensor() {
+    if (sensorPromise) return sensorPromise;
+    var D = window.DeviceOrientationEvent;
+    if (CFG.autoRotate === false || typeof D === 'undefined') {
+      state.sensor = 'unsupported';
+      return (sensorPromise = Promise.resolve());
+    }
+    var listen = function () {
+      state.sensor = 'granted';
+      window.addEventListener('deviceorientation', onDeviceOrientation);
+      return new Promise(function (res) {   // 最初の計測値が届くのを少しだけ待つ
+        var t0 = performance.now();
+        (function wait() {
+          if (state.sensorInit || performance.now() - t0 > 400) res(); else setTimeout(wait, 30);
+        })();
+      });
+    };
+    if (typeof D.requestPermission === 'function') {
+      state.sensor = 'pending';
+      var p;
+      try { p = D.requestPermission(); } catch (e) { p = Promise.reject(e); }
+      sensorPromise = Promise.race([p, new Promise(function (r) { setTimeout(function () { r('timeout'); }, 30000); })])
+        .then(function (r) {
+          if (r === 'granted') return listen();
+          state.sensor = 'denied';
+          toast('傾きセンサーが許可されていないため、横向きの自動判定はオフです', 4500);
+        })
+        .catch(function (e) {
+          console.warn('[GGC] 傾きセンサーの許可エラー', e);
+          state.sensor = 'unknown';
+          sensorPromise = null;   // 次のタップでもう一度試す
+        });
+    } else {
+      sensorPromise = listen();
+    }
+    return sensorPromise;
+  }
+  function sensorSettled() {
+    return state.sensor === 'granted' || state.sensor === 'denied' || state.sensor === 'unsupported';
+  }
+
   /* ───────── カメラ ───────── */
   function stopStream() {
     if (state.stream) {
@@ -308,23 +396,50 @@
   /* ───────── 合成ループ（カメラ映像＋ロゴ → canvas） ───────── */
   var loopOn = false, loopGen = 0, lastDraw = 0, lastVfc = 0;
 
+  // カメラ映像を、指定の回転を掛けて描く（収まらない部分は黒帯）
+  function drawVideo(c, cw, ch, rot) {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (rot === 0 && vw === cw && vh === ch) { c.drawImage(video, 0, 0, cw, ch); return; }
+    var odd = (rot === 90 || rot === -90), rw = odd ? vh : vw, rh = odd ? vw : vh;
+    var sc = Math.min(cw / rw, ch / rh);
+    if (rw * sc < cw - 0.5 || rh * sc < ch - 0.5) { c.fillStyle = '#000'; c.fillRect(0, 0, cw, ch); }
+    // インカメラは映像の左右が逆になるため、回転の方向も逆になる
+    var dir = state.facing === 'user' ? 1 : -1;
+    c.save();
+    c.translate(cw / 2, ch / 2);
+    c.rotate(dir * rot * Math.PI / 180);
+    c.scale(sc, sc);
+    c.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+    c.restore();
+  }
+
+  // 合成映像の画面上の置き方。本体を横に構えている時は、構えた人から見て正しい向きに見えるよう回して表示する
+  function layoutCanvas(rot) {
+    state.shownRot = rot;
+    var st = canvas.style, stage = $('stage');
+    if (rot === 90 || rot === -90) {
+      st.left = '50%'; st.top = '50%'; st.right = 'auto'; st.bottom = 'auto';
+      st.width = stage.clientHeight + 'px'; st.height = stage.clientWidth + 'px';
+      st.transform = 'translate(-50%, -50%) rotate(' + rot + 'deg)';
+    } else {
+      st.left = st.top = st.right = st.bottom = st.width = st.height = '';
+      st.transform = rot === 180 ? 'rotate(180deg)' : '';
+    }
+  }
+
   function drawFrame() {
     var vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
+    var rot = activeRot(), odd = (rot === 90 || rot === -90);
+    var rw = odd ? vh : vw, rh = odd ? vw : vh;
     // 録画中は動画サイズを固定する（途中で本体を回しても動画が壊れないように）
-    if (!state.sizeLocked && (canvas.width !== vw || canvas.height !== vh)) {
-      canvas.width = vw; canvas.height = vh;
+    if (!state.sizeLocked && (canvas.width !== rw || canvas.height !== rh)) {
+      canvas.width = rw; canvas.height = rh;
     }
     var cw = canvas.width, ch = canvas.height;
-    if (vw === cw && vh === ch) {
-      ctx.drawImage(video, 0, 0, cw, ch);
-    } else {
-      var sc = Math.min(cw / vw, ch / vh), dw = vw * sc, dh = vh * sc;
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, cw, ch);
-      ctx.drawImage(video, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-    }
+    drawVideo(ctx, cw, ch, rot);
     if (!state.rawMode) drawLogo(ctx, cw, ch);
+    if (rot !== state.shownRot) layoutCanvas(rot);
     lastDraw = performance.now();
   }
 
@@ -380,11 +495,13 @@
     state.busy = true;
     var f = $('flash');
     f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+    var rot = effectiveRot(), odd = (rot === 90 || rot === -90);
+    var pw = odd ? vh : vw, ph = odd ? vw : vh;
     var c = document.createElement('canvas');
-    c.width = vw; c.height = vh;
+    c.width = pw; c.height = ph;
     var x = c.getContext('2d', { alpha: false });
-    x.drawImage(video, 0, 0, vw, vh);
-    if (CFG.photo.logo) drawLogo(x, vw, vh);
+    drawVideo(x, pw, ph, rot);
+    if (CFG.photo.logo) drawLogo(x, pw, ph);
     var done = function (blob) {
       c.width = c.height = 0;
       if (!blob) {
@@ -392,12 +509,12 @@
         alertBox('写真を作成できませんでした', 'もう一度撮影してください。\n繰り返す場合は、アプリを開き直してください。');
         return;
       }
-      var item = { kind: 'photo', blob: blob, mime: 'image/jpeg', createdAt: Date.now(), w: vw, h: vh, complete: true };
+      var item = { kind: 'photo', blob: blob, mime: 'image/jpeg', createdAt: Date.now(), w: pw, h: ph, complete: true };
       DB.clear().then(function () {
-        return DB.setMeta({ kind: 'photo', mime: item.mime, createdAt: item.createdAt, w: vw, h: vh, complete: true });
+        return DB.setMeta({ kind: 'photo', mime: item.mime, createdAt: item.createdAt, w: pw, h: ph, complete: true });
       }).then(function () { return DB.addChunk(blob); });
       state.busy = false;
-      openReview(item);
+      openReview(item, '', true);
     };
     if (c.toBlob) c.toBlob(done, 'image/jpeg', CFG.photo.quality || 0.95);
     else done(null);
@@ -432,6 +549,7 @@
       if (state.rawMode) {
         videoTrack = state.stream.getVideoTracks()[0];
       } else {
+        state.recRot = effectiveRot();   // 録画開始時の向きで固定
         drawFrame();
         state.sizeLocked = true;
         state.canvasStream = canvas.captureStream(CFG.video.frameRate || 30);
@@ -565,7 +683,7 @@
     if (reason === 'max') note = '録画時間の上限に達したため、自動で停止しました。';
     else if (reason === 'hidden') note = 'アプリが画面から外れたため、録画を停止しました。';
     else if (reason === 'ended' || reason === 'error') note = 'カメラが中断されたため、録画を停止しました。';
-    openReview(item, note);
+    openReview(item, note, reason === 'user');
   }
 
   function offerRawMode(lead) {
@@ -586,7 +704,7 @@
     catch (e) { return false; }
   }
 
-  function openReview(item, note) {
+  function openReview(item, note, autoShare) {
     state.screen = 'review';
     state.camToken++;
     stopLoop();
@@ -645,11 +763,14 @@
         ? '「ファイルとして保存」で「ファイル」アプリに保存されます。「ファイル」アプリで動画を開き、共有ボタンから「ビデオを保存」を選ぶと写真アプリに入ります。'
         : '写真を長押しして「"写真"に保存」を選ぶか、「ファイルとして保存」を押してください。';
     }
-    setStatus(notes.join('\n'));
+    item.baseStatus = notes.join('\n');
+    setStatus(item.baseStatus);
     $('review').hidden = false;
+    // 撮影直後は共有メニューを自動で開く（iOSが自動表示を認めない場合は、ボタンを押す通常の流れになる）
+    if (autoShare && CFG.autoShare !== false && !$('saveBtn').hidden) saveToPhotos(true);
   }
 
-  function saveToPhotos() {
+  function saveToPhotos(auto) {
     var item = state.pending;
     if (!item || !item.file || state.sharing) return;
     state.sharing = true;
@@ -674,6 +795,8 @@
       var name = e && e.name;
       if (name === 'AbortError') {
         setStatus('保存はキャンセルされました。' + word + 'は消えていません。');
+      } else if (auto === true) {
+        setStatus(item.baseStatus);   // 自動表示できなかっただけなので、エラー扱いにしない
       } else if (name === 'InvalidStateError') {
         setStatus('共有メニューを開いています…');
       } else {
@@ -750,6 +873,10 @@
       '録画形式: ' + (pickMime() || '非対応'),
       '音声: ' + (state.stream ? (state.hasAudio ? 'あり' : 'なし（マイク未許可）') : '−'),
       'ロゴ: ' + logo,
+      '横向き自動判定: ' + (state.sensor === 'granted'
+        ? '有効（現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)] + '）'
+        : state.sensor === 'denied' ? '無効（センサー未許可）'
+        : state.sensor === 'unsupported' ? '非対応' : '確認中'),
       '保存方法: ' + (navigator.share && navigator.canShare ? '共有メニュー' : '代替（ファイル保存）'),
       '起動方法: ' + ((navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) ? 'ホーム画面' : 'ブラウザ')
     ];
@@ -757,19 +884,27 @@
   }
 
   /* ───────── イベント ───────── */
-  var lastShutter = -10000;
+  var lastShutter = -10000, sensorWait = false;
   $('shutter').addEventListener('click', function () {
     var now = performance.now();
     if (now - lastShutter < 350) return;   // 連打防止
     lastShutter = now;
     if (state.screen !== 'camera') return;
-    if (state.mode === 'photo') { takePhoto(); return; }
     if (state.recording) {
       if (now - state.recStart < 1000) return;   // 押し間違いによる即停止を防ぐ
       stopRecording('user');
-    } else {
-      startRecording();
+      return;
     }
+    var act = function () {
+      sensorWait = false;
+      if (state.screen !== 'camera' || state.recording) return;
+      if (state.mode === 'photo') takePhoto(); else startRecording();
+    };
+    if (sensorSettled()) { act(); return; }
+    // 傾きセンサーの許可確認がまだの時は、その結果を待ってから撮影する（最初の1回だけ）
+    if (sensorWait) return;
+    sensorWait = true;
+    ensureSensor().then(act, act);
   });
   $('flip').addEventListener('click', flipCamera);
   $('modeSwitch').addEventListener('click', function (e) {
@@ -779,7 +914,7 @@
   $('camRetry').addEventListener('click', function () { startCamera(); });
   $('logoNotice').addEventListener('click', showLogoHelp);
   $('titleBtn').addEventListener('click', showInfo);
-  $('saveBtn').addEventListener('click', saveToPhotos);
+  $('saveBtn').addEventListener('click', function () { saveToPhotos(false); });
   $('backBtn').addEventListener('click', backToCamera);
 
   document.addEventListener('visibilitychange', function () {
@@ -796,6 +931,16 @@
       requestWakeLock();
     }
   });
+
+  window.addEventListener('resize', function () { layoutCanvas(state.shownRot); });
+
+  // 傾きセンサー：iPhoneは最初のタップで許可を求める。許可が不要な端末はすぐ開始する
+  if (window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function') {
+    var firstTap = function () { document.removeEventListener('click', firstTap, true); ensureSensor(); };
+    document.addEventListener('click', firstTap, true);
+  } else {
+    ensureSensor();
+  }
 
   // ピンチ拡大・ダブルタップ拡大による画面のずれを防ぐ
   document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
