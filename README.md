@@ -36,7 +36,7 @@ iPhone の GitHub 画面から一度にアップロードしやすいよう、**
 | `sw.js` | オフライン起動と更新の管理 |
 | `manifest.webmanifest` | ホーム画面に追加したときの名前・アイコン設定 |
 | `icon-180.png` `icon-192.png` `icon-512.png` | アプリアイコン（仮のデザイン。差し替え可） |
-| `logo.png` | **GOLF GUTS のロゴ（同梱していません。後から追加してください → 4 章）** |
+| `logo.png` | GOLF GUTS のロゴ（白文字・背景透明。差し替え方法 → 4 章） |
 | `README.md` | この説明書 |
 
 ---
