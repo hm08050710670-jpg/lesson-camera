@@ -99,6 +99,35 @@ button:disabled { opacity: .35; }
 /* インカメラの写真プレビューは鏡像表示（保存される写真は反転しません） */
 .front.mode-photo #cam { transform: scaleX(-1); }
 
+/* 撮影の向き（縦／横）ボタン：ロゴが来ない左上に置く */
+#rotBtn {
+  position: absolute;
+  z-index: 2;
+  top: 4px; left: 6px;
+  width: 60px; height: 60px;
+  display: grid;
+  place-items: center;
+}
+#rotIn {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: transform .2s;
+}
+#rotBtn.on #rotIn { color: #000; background: var(--yellow); }
+#rotBtn:active #rotIn { filter: brightness(.8); }
+.recording #rotBtn { visibility: hidden; pointer-events: none; }
+@media (orientation: landscape) { #rotBtn { display: none; } }
+
 #flash {
   position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none;
 }

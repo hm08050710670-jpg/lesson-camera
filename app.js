@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.3.0';
+  var VERSION = '1.4.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -42,6 +42,7 @@
     sensor: 'unknown',       // 傾きセンサー: 'unknown' | 'pending' | 'granted' | 'denied' | 'unsupported'
     sensorInit: false,
     devAngle: 0,             // 本体の向き: 0=縦 / 90=左に倒す / -90=右に倒す / 180=逆さ
+    manualRot: 0,            // 手動で選んだ向き: 0=縦 / 90=横（上側を左へ） / -90=横（上側を右へ）
     recRot: 0,               // 録画開始時に固定した回転
     shownRot: 0,
     lens: '1',               // 使用中のカメラ: '1'（標準） | '0.5'（超広角）
@@ -225,10 +226,46 @@
   }
 
   // いま映像に掛けるべき回転（度）
+  var mqLandscape = null;
+  try { mqLandscape = window.matchMedia ? window.matchMedia('(orientation: landscape)') : null; } catch (e) {}
+  function uiRotated() {
+    // 画面自体が回転している時（ロックがオフ）は、映像が最初から正しい向きで届くので回さない
+    if (uiAngle() !== 0) return true;
+    return !!(mqLandscape && mqLandscape.matches);
+  }
   function effectiveRot() {
-    if (CFG.autoRotate === false || state.sensor !== 'granted' || state.rawMode) return 0;
-    if (uiAngle() !== 0) return 0;   // 画面自体が回転している時（ロックがオフ）は、映像が最初から正しい向きで届く
-    return state.devAngle;
+    if (state.rawMode || uiRotated()) return 0;
+    if (CFG.autoRotate === true) return state.sensor === 'granted' ? state.devAngle : 0;   // 傾きセンサーで自動判定（設定で有効にした場合のみ）
+    return state.manualRot;                                                                 // 通常は画面のボタンで選んだ向き
+  }
+
+  /* ───────── 向きの手動切替（縦／横） ─────────
+   * 傾きセンサーを使うとiOSが起動のたびに許可を求めるため、通常は画面のボタンで向きを選ぶ。
+   * 選んだ向きは次回の起動時も引き継ぐ。 */
+  function loadManualRot() {
+    try {
+      var v = parseInt(window.localStorage.getItem('ggc-rot'), 10);
+      if (v === 90 || v === -90) state.manualRot = v;
+    } catch (e) {}
+  }
+  function updateRotUI() {
+    var btn = $('rotBtn'), r = state.manualRot;
+    btn.hidden = CFG.autoRotate === true;
+    btn.classList.toggle('on', r !== 0);
+    $('rotLabel').textContent = r === 0 ? '縦向き' : '横向き';
+    // 本体を構えた人から見て文字が正しい向きになるよう、ボタンの中身も回す
+    $('rotIn').style.transform = r === 0 ? '' : 'rotate(' + r + 'deg)';
+    btn.setAttribute('aria-label', '撮影の向き: ' + (r === 0 ? '縦' : r === 90 ? '横（本体の上側を左へ）' : '横（本体の上側を右へ）'));
+  }
+  function cycleManualRot() {
+    if (state.recording || state.busy || CFG.autoRotate === true) return;
+    state.manualRot = state.manualRot === 0 ? 90 : (state.manualRot === 90 ? -90 : 0);
+    try { window.localStorage.setItem('ggc-rot', String(state.manualRot)); } catch (e) {}
+    updateRotUI();
+    if (state.mode === 'video') drawFrame();
+    toast(state.manualRot === 0 ? '縦向きで撮影します'
+      : state.manualRot === 90 ? '横向き：本体の上側を左に向けて構えます'
+      : '横向き：本体の上側を右に向けて構えます', 2200);
   }
   function activeRot() { return state.sizeLocked ? state.recRot : effectiveRot(); }
 
@@ -253,7 +290,7 @@
   function ensureSensor() {
     if (sensorPromise) return sensorPromise;
     var D = window.DeviceOrientationEvent;
-    if (CFG.autoRotate === false || typeof D === 'undefined') {
+    if (CFG.autoRotate !== true || typeof D === 'undefined') {
       state.sensor = 'unsupported';
       return (sensorPromise = Promise.resolve());
     }
@@ -1049,10 +1086,12 @@
         (state.lensMethod === 'device' ? (state.uwZoomCap ? '／超広角側ズーム ' + state.uwZoomCap.min + '〜' + state.uwZoomCap.max : '／途中の倍率は映像を拡大') : '') +
         (state.lensMethod ? '／現在 ' + state.zoomU.toFixed(2) + '×' : ''),
       'カメラ一覧: ' + (state.camLabels.length ? state.camLabels.join('、') : '取得なし'),
-      '横向き自動判定: ' + (state.sensor === 'granted'
-        ? '有効（現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)] + '）'
-        : state.sensor === 'denied' ? '無効（センサー未許可）'
-        : state.sensor === 'unsupported' ? '非対応' : '未確認（最初の撮影時に確認します）'),
+      CFG.autoRotate === true
+        ? '撮影の向き: 自動判定（' + (state.sensor === 'granted'
+          ? '有効／現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)]
+          : state.sensor === 'denied' ? '無効・センサー未許可'
+          : state.sensor === 'unsupported' ? '非対応' : '最初の撮影時に確認') + '）'
+        : '撮影の向き: ボタンで選択（現在: ' + (state.manualRot === 0 ? '縦' : state.manualRot === 90 ? '横・上側を左へ' : '横・上側を右へ') + '）',
       '保存方法: ' + (navigator.share && navigator.canShare ? '共有メニュー' : '代替（ファイル保存）'),
       '起動方法: ' + ((navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) ? 'ホーム画面' : 'ブラウザ')
     ];
@@ -1094,6 +1133,7 @@
   $('camRetry').addEventListener('click', function () { startCamera(); });
   $('logoNotice').addEventListener('click', showLogoHelp);
   $('titleBtn').addEventListener('click', showInfo);
+  $('rotBtn').addEventListener('click', cycleManualRot);
   $('saveBtn').addEventListener('click', function () { saveToPhotos(false); });
   $('backBtn').addEventListener('click', backToCamera);
 
@@ -1116,9 +1156,13 @@
 
   // 傾きセンサー：iPhoneでは許可の確認が必要なため、最初に撮影ボタンを押した時にだけ求める
   // （レンズ切替やモード切替のタップでは求めない）。許可が不要な端末はすぐ開始する
-  if (!(window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function')) {
+  // 自動判定は設定（autoRotate: true）で有効にした場合だけ使う。通常はセンサーを使わないので確認は出ない
+  if (CFG.autoRotate !== true ||
+      !(window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function')) {
     ensureSensor();
   }
+  loadManualRot();
+  updateRotUI();
 
   // ピンチ操作（2本指）でズーム：0.5×〜1×
   var pinch = null;
