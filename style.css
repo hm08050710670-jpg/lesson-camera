@@ -99,6 +99,37 @@ button:disabled { opacity: .35; }
 /* インカメラの写真プレビューは鏡像表示（保存される写真は反転しません） */
 .front.mode-photo #cam { transform: scaleX(-1); }
 
+/* ガイド線：映像の上に重ねて表示するだけ（保存される動画・写真には入らない） */
+#guide {
+  position: absolute;
+  z-index: 1;
+  left: 50%; top: 50%;
+  pointer-events: none;
+}
+/* ガイド線の表示／非表示ボタン：右上（表示中は黄色、非表示は白） */
+#guideBtn {
+  position: absolute;
+  z-index: 2;
+  top: 8px; right: 6px;
+  display: inline-flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .94);
+  color: #000;
+  font-size: 17px;
+  font-weight: 700;
+  white-space: nowrap;
+  transform-origin: top right;
+}
+#guideBtn.on { background: var(--yellow); }
+#guideBtn:active { filter: brightness(.8); }
+.recording #guideBtn { visibility: hidden; pointer-events: none; }
+@media (max-width: 420px) { #guideBtn { height: 42px; padding: 0 12px; font-size: 14px; } }
+@media (max-width: 380px) { #guideBtn { height: 40px; padding: 0 10px; font-size: 13px; } }
+@media (orientation: landscape) { #guideBtn { display: none; } }
+
 /* 撮影の向き（縦／横）ボタン：ロゴが来ない左上に置く。スマホの絵＋文字 */
 #rotBtn {
   position: absolute;
@@ -166,6 +197,7 @@ button:disabled { opacity: .35; }
 
 #camMsg {
   position: absolute; inset: 0;
+  z-index: 5;   /* カメラのエラー表示は、映像上のボタンやガイド線より手前に出す */
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 14px;
   padding: 24px 28px;

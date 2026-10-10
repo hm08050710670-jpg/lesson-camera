@@ -4,12 +4,13 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.4.2';
+  var VERSION = '1.5.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
   CFG.audio = CFG.audio || {};
   CFG.photo = CFG.photo || {};
+  CFG.guide = CFG.guide || {};
 
   var $ = function (id) { return document.getElementById(id); };
   var app = $('app'), video = $('cam'), canvas = $('comp');
@@ -42,6 +43,7 @@
     sensor: 'unknown',       // 傾きセンサー: 'unknown' | 'pending' | 'granted' | 'denied' | 'unsupported'
     sensorInit: false,
     devAngle: 0,             // 本体の向き: 0=縦 / 90=左に倒す / -90=右に倒す / 180=逆さ
+    guideOn: true,           // ガイド線の表示（画面に見えるだけで、動画・写真には入らない）
     manualRot: 0,            // 手動で選んだ向き: 0=縦 / 90=横（本体の上側を左へ向けて構える）
     recRot: 0,               // 録画開始時に固定した回転
     shownRot: 0,
@@ -258,12 +260,76 @@
       : r === -90 ? 'rotate(-90deg) translateX(-100%)' : '';
     btn.setAttribute('aria-label', '撮影の向き: ' + (r === 0 ? '縦' : '横（本体の上側を左へ）'));
   }
+  /* ───────── ガイド線（構図の補助線） ─────────
+   * 画面の上に重ねて表示するだけで、保存される動画・写真には一切入らない（canvasには描かない）。
+   * 縦動画では、スイング解析の画面で下部のボタンに隠れない範囲（上から guide.bottom まで）を枠として、
+   * その中に 中央の縦線・対角線・頭の線・足元の線 を引く。 */
+  function loadGuide() {
+    try {
+      var v = window.localStorage.getItem('ggc-guide');
+      if (v === '0') state.guideOn = false; else if (v === '1') state.guideOn = true;
+      else state.guideOn = CFG.guide.defaultOn !== false;
+    } catch (e) {}
+  }
+  function guideLine(x1, y1, x2, y2, op, w) {
+    var f = function (n) { return (Math.round(n * 10) / 10); };
+    var pos = ' x1="' + f(x1) + '" y1="' + f(y1) + '" x2="' + f(x2) + '" y2="' + f(y2) + '"';
+    // 白線の下に薄い影を敷き、明るい背景でも暗い背景でも見えるようにする
+    return '<line' + pos + ' stroke="rgba(0,0,0,.28)" stroke-width="' + (w + 1.4) + '"/>' +
+           '<line' + pos + ' stroke="rgba(255,255,255,' + op + ')" stroke-width="' + w + '"/>';
+  }
+  function layoutGuide() {
+    var g = $('guide'), btn = $('guideBtn');
+    btn.classList.toggle('on', state.guideOn);
+    btn.setAttribute('aria-label', 'ガイド線: ' + (state.guideOn ? '表示中' : '非表示'));
+    var rotNow = activeRot();
+    // ボタンも、横に構えた人から読める向きに回す（右上の角を基準に、右端に沿わせる）
+    btn.style.transform = rotNow === 90 ? 'rotate(90deg) translateX(100%)' : rotNow === -90 ? 'rotate(-90deg) translateY(100%)' : rotNow === 180 ? 'rotate(180deg) translate(100%, 100%)' : '';
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!state.guideOn || !vw || !vh || state.screen !== 'camera') { g.hidden = true; return; }
+    var odd = (rotNow === 90 || rotNow === -90);
+    var ow = odd ? vh : vw, oh = odd ? vw : vh;            // 保存される映像の縦横
+    var stage = $('stage'), sw = stage.clientWidth, sh = stage.clientHeight;
+    if (!sw || !sh) { g.hidden = true; return; }
+    var k = odd ? Math.min(sh / ow, sw / oh) : Math.min(sw / ow, sh / oh);
+    var w = ow * k, h = oh * k;                            // 画面上での映像の大きさ（回転前）
+    var G = CFG.guide;
+    // 縦長の映像だけ、下部を枠から外す（横長の映像は全体を枠にする）
+    var bottom = oh > ow ? Math.min(1, Math.max(0.5, G.bottom || 0.86)) : 1;
+    var B = h * bottom, cx = w / 2;
+    var headY = B * (G.head || 0.30), feetY = B * (G.feet || 0.78);
+    var svg = '';
+    svg += guideLine(0, 0, w, B, 0.45, 1) + guideLine(w, 0, 0, B, 0.45, 1);          // 対角線
+    svg += guideLine(cx, 0, cx, B, 0.7, 1);                                          // 中央の縦線
+    svg += guideLine(0, headY, w, headY, 0.55, 1);                                   // 頭の線
+    svg += guideLine(0, feetY, w, feetY, 0.8, 1.3);                                  // 足元の線
+    if (bottom < 1) svg += guideLine(0, B, w, B, 0.5, 1);                            // 枠の下端（これより下は解析画面でボタンに隠れる）
+    var txt = function (y, t) {
+      return '<text x="8" y="' + (Math.round(y) - 5) + '" font-size="11" font-weight="700" fill="rgba(255,255,255,.9)" ' +
+        'style="paint-order:stroke;stroke:rgba(0,0,0,.4);stroke-width:2px">' + t + '</text>';
+    };
+    svg += txt(headY, '頭') + txt(feetY, '足元');
+    g.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + (Math.round(w * 10) / 10) + ' ' + (Math.round(h * 10) / 10) +
+      '" width="100%" height="100%" style="display:block">' + svg + '</svg>';
+    g.style.width = w + 'px';
+    g.style.height = h + 'px';
+    g.style.transform = 'translate(-50%, -50%)' + (rotNow ? ' rotate(' + rotNow + 'deg)' : '');
+    g.hidden = false;
+  }
+  function toggleGuide() {
+    if (state.recording) return;
+    state.guideOn = !state.guideOn;
+    try { window.localStorage.setItem('ggc-guide', state.guideOn ? '1' : '0'); } catch (e) {}
+    layoutGuide();
+  }
+
   function cycleManualRot() {
     if (state.recording || state.busy || CFG.autoRotate === true) return;
     state.manualRot = state.manualRot === 0 ? 90 : 0;
     try { window.localStorage.setItem('ggc-rot', String(state.manualRot)); } catch (e) {}
     updateRotUI();
     if (state.mode === 'video') drawFrame();
+    layoutGuide();
     toast(state.manualRot === 0 ? '縦向きで撮影します' : '横向き：本体の上側を左に向けて構えます', 2200);
   }
   function activeRot() { return state.sizeLocked ? state.recRot : effectiveRot(); }
@@ -620,6 +686,7 @@
   // 合成映像の画面上の置き方。本体を横に構えている時は、構えた人から見て正しい向きに見えるよう回して表示する
   function layoutCanvas(rot) {
     state.shownRot = rot;
+    setTimeout(layoutGuide, 0);   // ガイド線も同じ向き・大きさに合わせる
     var st = canvas.style, stage = $('stage');
     if (rot === 90 || rot === -90) {
       st.left = '50%'; st.top = '50%'; st.right = 'auto'; st.bottom = 'auto';
@@ -1091,6 +1158,7 @@
           : state.sensor === 'denied' ? '無効・センサー未許可'
           : state.sensor === 'unsupported' ? '非対応' : '最初の撮影時に確認') + '）'
         : '撮影の向き: ボタンで選択（現在: ' + (state.manualRot === 0 ? '縦' : '横・上側を左へ') + '）',
+      'ガイド線: ' + (state.guideOn ? '表示' : '非表示') + '（縦動画の枠: 上から ' + Math.round((CFG.guide.bottom || 0.86) * 100) + '% まで）',
       '保存方法: ' + (navigator.share && navigator.canShare ? '共有メニュー' : '代替（ファイル保存）'),
       '起動方法: ' + ((navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) ? 'ホーム画面' : 'ブラウザ')
     ];
@@ -1133,6 +1201,7 @@
   $('logoNotice').addEventListener('click', showLogoHelp);
   $('titleBtn').addEventListener('click', showInfo);
   $('rotBtn').addEventListener('click', cycleManualRot);
+  $('guideBtn').addEventListener('click', toggleGuide);
   $('saveBtn').addEventListener('click', function () { saveToPhotos(false); });
   $('backBtn').addEventListener('click', backToCamera);
 
@@ -1151,7 +1220,9 @@
     }
   });
 
-  window.addEventListener('resize', function () { layoutCanvas(state.shownRot); });
+  window.addEventListener('resize', function () { layoutCanvas(state.shownRot); layoutGuide(); });
+  video.addEventListener('loadedmetadata', layoutGuide);
+  video.addEventListener('resize', layoutGuide);
 
   // 傾きセンサー：iPhoneでは許可の確認が必要なため、最初に撮影ボタンを押した時にだけ求める
   // （レンズ切替やモード切替のタップでは求めない）。許可が不要な端末はすぐ開始する
@@ -1160,6 +1231,7 @@
       !(window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function')) {
     ensureSensor();
   }
+  loadGuide();
   loadManualRot();
   updateRotUI();
 
