@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.2.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -43,7 +43,12 @@
     sensorInit: false,
     devAngle: 0,             // 本体の向き: 0=縦 / 90=左に倒す / -90=右に倒す / 180=逆さ
     recRot: 0,               // 録画開始時に固定した回転
-    shownRot: 0
+    shownRot: 0,
+    lens: '1',               // '1'（標準） | '0.5'（超広角）
+    lensMethod: null,        // 超広角への切替方法: null（非対応） | 'zoom'（ズーム指定） | 'device'（カメラを切替）
+    zoomCap: null,
+    uwDeviceId: null,
+    camLabels: []
   };
 
   /* ───────── 端末内の一時保管（IndexedDB） ─────────
@@ -327,6 +332,8 @@
       return Promise.resolve(false);
     }
     var V = CFG.video;
+    var wantUW = state.facing === 'environment' && state.lens === '0.5' &&
+      state.lensMethod === 'device' && !!state.uwDeviceId;
     var videoC = {
       facingMode: { ideal: state.facing },
       width: { ideal: V.width || 1920 },
@@ -335,6 +342,7 @@
     };
     var audioC = CFG.audio.natural === false ? true :
       { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (wantUW) { delete videoC.facingMode; videoC.deviceId = { exact: state.uwDeviceId }; }
     var gum = function (c) { return navigator.mediaDevices.getUserMedia(c); };
 
     // 1) 映像＋音声 → 2) 映像のみ（マイク拒否時） → 3) 条件をゆるめた映像のみ
@@ -343,6 +351,7 @@
       .catch(function (e) {
         // 利用者が拒否した場合は、確認を何度も出さない
         if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) throw e;
+        if (wantUW) { var uwErr = new Error('uw-failed'); uwErr.uwFailed = true; throw uwErr; }
         return gum({ video: { facingMode: state.facing }, audio: false });
       })
       .then(function (stream) {
@@ -360,6 +369,14 @@
           vt.onended = onTrackEnded;
         }
         app.classList.toggle('front', state.facing === 'user');
+        if (wantUW) {
+          // 超広角カメラを開けなかった（別のカメラに切り替わった）場合は標準に戻す
+          var got = vt && vt.getSettings ? vt.getSettings().deviceId : null;
+          if (got && got !== state.uwDeviceId) { state.lens = '1'; toast('超広角カメラに切り替えできませんでした'); }
+          updateLensUI();
+        } else {
+          detectLens(token);
+        }
         video.srcObject = stream;
         var p = video.play();
         if (p && p.catch) p.catch(function () {});
@@ -374,10 +391,93 @@
       })
       .catch(function (err) {
         if (token !== state.camToken) return false;
+        if (err && err.uwFailed) {
+          // 超広角カメラを開けなかった時は、標準カメラで開き直す
+          state.lens = '1';
+          updateLensUI();
+          toast('超広角カメラに切り替えできませんでした');
+          return startCamera();
+        }
         console.warn('[GGC] カメラ起動エラー', err);
         cameraError(err);
         return false;
       });
+  }
+
+  /* ───────── 超広角（0.5×） ─────────
+   * iPhoneのブラウザが超広角を出す方法は機種・iOSで異なるため、使える方法を起動時に調べる。
+   *   1) ズーム指定：1本のカメラで 0.5〜 のズーム値を指定できる場合（切替が速い）
+   *   2) カメラ切替：カメラ一覧に「超広角」があれば、そのカメラを開き直す
+   * どちらも使えない機種では、切替ボタンを表示しない。 */
+  function updateLensUI() {
+    var show = !!state.lensMethod && state.facing === 'environment';
+    var box = $('lens');
+    box.hidden = !show;
+    var bs = box.querySelectorAll('button');
+    for (var i = 0; i < bs.length; i++) {
+      var v = bs[i].getAttribute('data-lens'), on = v === state.lens;
+      bs[i].classList.toggle('on', on);
+      bs[i].textContent = on ? (v === '0.5' ? '0.5×' : '1×') : (v === '0.5' ? '.5' : '1');
+    }
+  }
+
+  function applyZoom(lens) {
+    var vt = state.stream && state.stream.getVideoTracks()[0], z = state.zoomCap;
+    if (!vt || !z) return Promise.reject(new Error('no zoom'));
+    var target = lens === '0.5' ? Math.max(z.min, 0.5) : Math.min(Math.max(1, z.min), z.max);
+    return vt.applyConstraints({ advanced: [{ zoom: target }] });
+  }
+
+  // 標準カメラで起動した直後に、超広角へ切り替える方法を調べる
+  function detectLens(token) {
+    if (state.facing !== 'environment' || !state.stream) { updateLensUI(); return; }
+    var vt = state.stream.getVideoTracks()[0], cap = {};
+    try { cap = (vt && vt.getCapabilities) ? vt.getCapabilities() : {}; } catch (e) {}
+    var z = cap && cap.zoom;
+    state.zoomCap = (z && typeof z.min === 'number' && typeof z.max === 'number') ? { min: z.min, max: z.max } : null;
+    var byZoom = !!state.zoomCap && state.zoomCap.min <= 0.6 && state.zoomCap.max >= 1;
+
+    var finish = function (method) {
+      if (token !== state.camToken) return;
+      state.lensMethod = method;
+      if (!method) state.lens = '1';
+      // 撮影から戻った時など、カメラを開き直した後も前回の選択（超広角）を引き継ぐ
+      if (method === 'zoom' && state.lens === '0.5') {
+        applyZoom('0.5').catch(function () { state.lens = '1'; }).then(updateLensUI);
+      } else if (method === 'device' && state.lens === '0.5') {
+        startCamera();
+        return;
+      }
+      updateLensUI();
+    };
+
+    if (!navigator.mediaDevices.enumerateDevices) { finish(byZoom ? 'zoom' : null); return; }
+    navigator.mediaDevices.enumerateDevices().then(function (list) {
+      var cams = list.filter(function (d) { return d.kind === 'videoinput'; });
+      state.camLabels = cams.map(function (d) { return d.label || '(名前なし)'; });
+      var uw = null;
+      cams.forEach(function (d) {
+        var l = d.label || '';
+        if (/ultra[\s-]*wide|超広角/i.test(l) && !/front|前面|フロント/i.test(l)) uw = uw || d;
+      });
+      state.uwDeviceId = uw ? uw.deviceId : null;
+      finish(byZoom ? 'zoom' : (uw && uw.deviceId ? 'device' : null));
+    }).catch(function () { finish(byZoom ? 'zoom' : null); });
+  }
+
+  function setLens(lens) {
+    if (state.recording || state.busy || !state.lensMethod || lens === state.lens) return;
+    if (state.lensMethod === 'zoom') {
+      state.busy = true;
+      applyZoom(lens).then(function () { state.lens = lens; })
+        .catch(function (e) { console.warn('[GGC] ズーム切替エラー', e); toast('切り替えできませんでした'); })
+        .then(function () { state.busy = false; updateLensUI(); });
+      return;
+    }
+    state.busy = true;
+    state.lens = lens;
+    updateLensUI();
+    startCamera().then(function () { state.busy = false; });
   }
 
   function onTrackEnded() {
@@ -484,6 +584,8 @@
     if (state.recording || state.busy) return;
     state.busy = true;
     state.facing = state.facing === 'user' ? 'environment' : 'user';
+    state.lens = '1';
+    updateLensUI();
     startCamera().then(function () { state.busy = false; });
   }
 
@@ -873,6 +975,9 @@
       '録画形式: ' + (pickMime() || '非対応'),
       '音声: ' + (state.stream ? (state.hasAudio ? 'あり' : 'なし（マイク未許可）') : '−'),
       'ロゴ: ' + logo,
+      '超広角: ' + (state.lensMethod === 'zoom' ? '対応（ズーム指定）' : state.lensMethod === 'device' ? '対応（カメラ切替）' : '非対応') +
+        (state.zoomCap ? '／ズーム範囲 ' + state.zoomCap.min + '〜' + state.zoomCap.max : '／ズーム指定なし'),
+      'カメラ一覧: ' + (state.camLabels.length ? state.camLabels.join('、') : '取得なし'),
       '横向き自動判定: ' + (state.sensor === 'granted'
         ? '有効（現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)] + '）'
         : state.sensor === 'denied' ? '無効（センサー未許可）'
@@ -907,6 +1012,10 @@
     ensureSensor().then(act, act);
   });
   $('flip').addEventListener('click', flipCamera);
+  $('lens').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-lens]') : null;
+    if (b) setLens(b.getAttribute('data-lens'));
+  });
   $('modeSwitch').addEventListener('click', function (e) {
     var b = e.target.closest ? e.target.closest('button[data-mode]') : null;
     if (b) setMode(b.getAttribute('data-mode'));

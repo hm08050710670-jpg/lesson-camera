@@ -148,6 +148,29 @@ button:disabled { opacity: .35; }
   gap: 12px;
 }
 
+/* レンズ切替（0.5× / 1×） */
+#lens {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .42);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+#lens button {
+  min-width: 36px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+#lens button.on { color: var(--yellow); background: rgba(255, 255, 255, .16); }
+.recording #lens, .front #lens { visibility: hidden; pointer-events: none; }
+
 #modeSwitch { display: flex; gap: 4px; }
 #modeSwitch button {
   font-size: 14px;
