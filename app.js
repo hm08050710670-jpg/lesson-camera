@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.5.1';
+  var VERSION = '1.5.2';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -34,6 +34,8 @@
     recMime: '',
     canvasStream: null,
     chunks: [],
+    recStats: null,          // 録画中のなめらかさの計測（調査用）
+    lastRec: null,           // 前回の録画の計測結果
     recStart: 0,
     recElapsed: 0,
     timer: null,
@@ -708,10 +710,26 @@
       canvas.width = rw; canvas.height = rh;
     }
     var cw = canvas.width, ch = canvas.height;
+    var t0 = performance.now();
     drawVideo(ctx, cw, ch, rot);
     if (!state.rawMode) drawLogo(ctx, cw, ch);
     if (rot !== state.shownRot) layoutCanvas(rot);
     lastDraw = performance.now();
+    // 録画中は、コマの間隔と合成にかかった時間を記録する（なめらかさの調査用）
+    var rs = state.recStats;
+    if (rs) {
+      rs.draws++;
+      if (rs.last) {
+        var gap = t0 - rs.last;
+        if (gap > rs.maxGap) rs.maxGap = gap;
+        if (gap > 50) rs.late50++;
+        if (gap > 100) rs.late100++;
+      } else { rs.first = t0; }
+      rs.last = t0;
+      var cost = lastDraw - t0;
+      rs.sumCost += cost;
+      if (cost > rs.maxCost) rs.maxCost = cost;
+    }
   }
 
   function startLoop() {
@@ -723,9 +741,17 @@
     var useVfc = typeof video.requestVideoFrameCallback === 'function';
     lastVfc = performance.now();
 
-    function onVfc() {
+    function onVfc(now, meta) {
       if (!loopOn || gen !== loopGen) return;
       lastVfc = performance.now();
+      var rs = state.recStats;
+      if (rs && meta && typeof meta.presentedFrames === 'number') {
+        // カメラから届いたコマのうち、合成が間に合わず飛ばしたコマを数える
+        if (rs.pf0 == null) rs.pf0 = meta.presentedFrames;
+        else if (meta.presentedFrames - rs.pfLast > 1) rs.skipped += meta.presentedFrames - rs.pfLast - 1;
+        rs.pfLast = meta.presentedFrames;
+        rs.viaVfc = true;
+      }
       if (state.mode === 'video') drawFrame();
       video.requestVideoFrameCallback(onVfc);
     }
@@ -864,6 +890,7 @@
       rec.ondataavailable = function (e) {
         if (e.data && e.data.size > 0) {
           state.chunks.push(e.data);
+          if (state.recStats) { state.recStats.bytes += e.data.size; state.recStats.chunks++; }
           DB.addChunk(e.data);   // 1秒ごとに端末内へ退避（異常終了時の復元用）
         }
       };
@@ -879,6 +906,10 @@
       state.stopping = false;
       state.busy = false;
       state.recStart = performance.now();
+      var camSet = {};
+      try { camSet = state.stream.getVideoTracks()[0].getSettings() || {}; } catch (eS) {}
+      state.recStats = { draws: 0, first: 0, last: 0, maxGap: 0, late50: 0, late100: 0, sumCost: 0, maxCost: 0,
+        pf0: null, pfLast: 0, skipped: 0, viaVfc: false, camRate: camSet.frameRate || 0, bytes: 0, chunks: 0 };
       app.classList.add('recording');
       $('recTime').textContent = '0:00';
       $('recBadge').hidden = false;
@@ -932,6 +963,20 @@
   function finalizeRecording(reason) {
     var type = state.recMime || 'video/mp4';
     var blob = new Blob(state.chunks, { type: type });
+    // 計測結果をまとめる（タイトルをタップして出る情報画面で確認できる）
+    var rs = state.recStats;
+    state.recStats = null;
+    if (rs && rs.draws > 1) {
+      var span = (rs.last - rs.first) / 1000;
+      state.lastRec = {
+        seconds: state.recElapsed, w: (state.recMeta || {}).w, h: (state.recMeta || {}).h,
+        fps: span > 0 ? (rs.draws - 1) / span : 0,
+        camFps: (rs.viaVfc && span > 0) ? (rs.pfLast - rs.pf0) / span : 0,
+        camRate: rs.camRate, late50: rs.late50, late100: rs.late100, maxGap: rs.maxGap, skipped: rs.skipped,
+        avgCost: rs.sumCost / rs.draws, maxCost: rs.maxCost, viaVfc: rs.viaVfc,
+        mbps: state.recElapsed > 0 ? blob.size * 8 / state.recElapsed / 1e6 : 0, chunks: rs.chunks, mime: type, raw: state.rawMode
+      };
+    }
     var meta = state.recMeta || {};
     state.chunks = [];
     cleanupRecording();
@@ -1146,6 +1191,18 @@
       '（位置指定: ' + (sc.pointsOfInterest ? 'あり' : 'なし') + '／ピントの方式: ' + modes + '／距離指定: ' + dist + '）';
   }
 
+  // 前回の録画のなめらかさ（調査用の表示）
+  function lastRecInfo() {
+    var r = state.lastRec;
+    if (!r) return '前回の録画: まだありません（録画してから、もう一度ここを開いてください）';
+    var f1 = function (n) { return (Math.round(n * 10) / 10).toFixed(1); };
+    return '前回の録画: ' + f1(r.seconds) + '秒・' + r.w + '×' + r.h + (r.raw ? '（ロゴなし録画）' : '') + '\n' +
+      '・記録コマ数: ' + f1(r.fps) + 'コマ/秒（カメラ ' + (r.camFps ? f1(r.camFps) : '不明') + '／設定 ' + (r.camRate ? Math.round(r.camRate) : '不明') + '）\n' +
+      '・コマの遅れ: 50ms超 ' + r.late50 + '回／100ms超 ' + r.late100 + '回／最長 ' + Math.round(r.maxGap) + 'ms\n' +
+      '・取りこぼし: ' + (r.viaVfc ? r.skipped + 'コマ' : '計測不可') + '／合成の負荷: 平均 ' + f1(r.avgCost) + 'ms・最大 ' + f1(r.maxCost) + 'ms\n' +
+      '・方式: ' + (r.viaVfc ? 'フレーム通知' : '画面更新') + '／' + f1(r.mbps) + 'Mbps／' + r.chunks + '分割／' + r.mime;
+  }
+
   function showInfo() {
     if (state.recording) return;
     var vw = video.videoWidth, vh = video.videoHeight, fr = '';
@@ -1168,6 +1225,7 @@
         (state.lensMethod ? '／現在 ' + state.zoomU.toFixed(2) + '×' : ''),
       'カメラ一覧: ' + (state.camLabels.length ? state.camLabels.join('、') : '取得なし'),
       focusInfo(),
+      lastRecInfo(),
       CFG.autoRotate === true
         ? '撮影の向き: 自動判定（' + (state.sensor === 'granted'
           ? '有効／現在: ' + ({ '0': '縦', '90': '横・左倒し', '-90': '横・右倒し', '180': '逆さ' })[String(state.devAngle)]
