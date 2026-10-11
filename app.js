@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.6.0';
+  var VERSION = '1.7.0';
   var CFG = window.GGC_CONFIG || {};
   CFG.logo = CFG.logo || {};
   CFG.video = CFG.video || {};
@@ -856,7 +856,12 @@
         state.recRot = effectiveRot();   // 録画開始時の向きで固定
         drawFrame();
         state.sizeLocked = true;
-        state.canvasStream = canvas.captureStream(CFG.video.frameRate || 30);
+        // コマ数を指定しない = 描いたコマをすべて記録する。
+        // コマ数を指定すると、Safariは「1/30秒ごとの時計」に合ったコマしか記録せず、
+        // カメラ側のコマ（同じく約1/30秒ごと）とタイミングがずれた時にコマが間引かれてカクつく
+        state.canvasStream = (CFG.video.captureEveryFrame === false)
+          ? canvas.captureStream(CFG.video.frameRate || 30)
+          : canvas.captureStream();
         videoTrack = state.canvasStream.getVideoTracks()[0];
       }
       var tracks = [videoTrack];
@@ -989,11 +994,12 @@
       };
     }
     var meta = state.recMeta || {};
+    var fps = Math.round((rs && rs.camRate) || CFG.video.frameRate || 30);
     state.chunks = [];
     cleanupRecording();
-    hideProgress();
 
     if (!blob.size) {
+      hideProgress();
       DB.clear();
       if (state.rawMode) {
         alertBox('録画データを取得できませんでした', 'アプリを開き直してからもう一度お試しください。\n繰り返す場合は、iOSを最新版に更新してください。');
@@ -1005,16 +1011,82 @@
     meta.complete = true;
     meta.duration = state.recElapsed;
     DB.setMeta(meta);
-    if (!(state.chunkMs > 0)) DB.addChunk(blob);   // 保存前に閉じても復元できるよう、完成した動画を端末内に保管
-    var item = {
-      kind: 'video', blob: blob, mime: type, createdAt: meta.createdAt, w: meta.w, h: meta.h,
-      duration: meta.duration, complete: true, logo: meta.logo
+    // 仕上げ（標準のMP4への並べ替え）が終わるまで「仕上げています…」の表示を続ける
+    convertRecording(blob, type, fps).then(function (cv) {
+      hideProgress();
+      if (state.lastRec) state.lastRec.conv = cv.info;
+      var out = cv.blob;
+      // 保存前に閉じても復元できるよう、完成した動画を端末内に保管
+      if (!(state.chunkMs > 0)) DB.addChunk(out);
+      else if (out !== blob) DB.clear().then(function () { return DB.setMeta(meta); }).then(function () { return DB.addChunk(out); });
+      var item = {
+        kind: 'video', blob: out, mime: type, createdAt: meta.createdAt, w: meta.w, h: meta.h,
+        duration: meta.duration, complete: true, logo: meta.logo
+      };
+      var note = '';
+      if (reason === 'max') note = '録画時間の上限に達したため、自動で停止しました。';
+      else if (reason === 'hidden') note = 'アプリが画面から外れたため、録画を停止しました。';
+      else if (reason === 'ended' || reason === 'error') note = 'カメラが中断されたため、録画を停止しました。';
+      openReview(item, note, reason === 'user');
+    });
+  }
+
+  // 変換後の動画がこの端末で開けるかを確かめる（true=開ける / false=開けない / null=時間内に判定できず）
+  function checkPlayable(blob, seconds) {
+    return new Promise(function (resolve) {
+      var v = document.createElement('video'), url = URL.createObjectURL(blob), done = false, to;
+      var end = function (r) {
+        if (done) return;
+        done = true;
+        clearTimeout(to);
+        v.onloadedmetadata = v.onerror = null;
+        try { v.removeAttribute('src'); v.load(); } catch (e) {}
+        URL.revokeObjectURL(url);
+        resolve(r);
+      };
+      to = setTimeout(function () { end(null); }, 1200);
+      v.muted = true; v.playsInline = true; v.preload = 'metadata';
+      v.onloadedmetadata = function () {
+        var d = v.duration;
+        end(isFinite(d) && d > 0 && v.videoWidth > 0 && Math.abs(d - seconds) < Math.max(1, seconds * 0.05));
+      };
+      v.onerror = function () { end(false); };
+      v.src = url;
+    });
+  }
+
+  // iPhoneの録画データ（細切れの形式のMP4・長さの情報なし）を、LINEなど他のアプリでも扱える標準のMP4に並べ替える。
+  // 映像・音声は再圧縮しない（画質は変わらない）。少しでも問題があれば、元の録画データをそのまま使う。
+  function convertRecording(blob, type, fps) {
+    var info = { result: 'off' }, lib = window.GGC_MP4, settled = false;
+    if (type !== 'video/mp4' || !lib || CFG.video.remux === false) return Promise.resolve({ blob: blob, info: info });
+    var t0 = performance.now();
+    var finish = function (b, result, extra) {
+      if (settled) return null;
+      settled = true;
+      info.result = result;
+      info.ms = performance.now() - t0;
+      if (extra) Object.keys(extra).forEach(function (k) { info[k] = extra[k]; });
+      return { blob: b, info: info };
     };
-    var note = '';
-    if (reason === 'max') note = '録画時間の上限に達したため、自動で停止しました。';
-    else if (reason === 'hidden') note = 'アプリが画面から外れたため、録画を停止しました。';
-    else if (reason === 'ended' || reason === 'error') note = 'カメラが中断されたため、録画を停止しました。';
-    openReview(item, note, reason === 'user');
+    var work = Promise.resolve().then(function () {
+      return lib.fix(blob, { fps: fps, retime: CFG.video.retime !== false });
+    }).then(function (r) {
+      if (!r) return finish(blob, 'asis');                       // もともと標準の形式だった
+      var ex = { fragments: r.fragments, retimed: r.retimed, maxMove: r.maxMove || 0, frames: r.frames, slots: r.slots, seconds: r.seconds, videoSeconds: 0 };
+      (r.tracks || []).forEach(function (t) { if (t.kind === 'vide') ex.videoSeconds = t.seconds; });
+      return checkPlayable(r.blob, r.seconds).then(function (ok) {
+        if (ok === false) return finish(blob, 'reject', ex);    // 変換後の動画を開けなかった → 元のデータを使う
+        ex.checked = ok === true;
+        return finish(r.blob, 'ok', ex);
+      });
+    }).catch(function (e) {
+      return finish(blob, 'error', { error: String((e && e.message) || e) });
+    });
+    var limit = new Promise(function (resolve) {
+      setTimeout(function () { resolve(finish(blob, 'timeout')); }, 20000);
+    });
+    return Promise.race([work, limit]).then(function (v) { return v || { blob: blob, info: info }; });
   }
 
   function offerRawMode(lead) {
@@ -1203,6 +1275,18 @@
       '（位置指定: ' + (sc.pointsOfInterest ? 'あり' : 'なし') + '／ピントの方式: ' + modes + '／距離指定: ' + dist + '）';
   }
 
+  // 録画後の仕上げ（標準のMP4への並べ替え）の結果
+  function convInfo(c) {
+    if (!c || c.result === 'off') return 'なし（録画データのまま）';
+    if (c.result === 'asis') return '不要（もともと標準の形式）';
+    if (c.result === 'reject') return '取り消し（変換後の動画を開けなかったため、元のデータを使用）';
+    if (c.result === 'timeout') return '取り消し（時間切れのため、元のデータを使用）';
+    if (c.result === 'error') return '失敗（元のデータを使用）: ' + c.error;
+    var saved = c.videoSeconds > 0 ? '\n・保存された映像: ' + c.frames + 'コマ（' + (Math.round(c.frames / c.videoSeconds * 10) / 10).toFixed(1) + 'コマ/秒）' : '';
+    return '標準のMP4に変換（' + c.fragments + '区画・' + Math.round(c.ms) + 'ms・再生確認' + (c.checked ? '済み' : 'なし') + '）／コマ時刻の整列: ' +
+      (c.retimed ? 'あり（最大' + Math.round(c.maxMove * 1000) + 'ms・' + c.frames + 'コマ／' + c.slots + '枠）' : 'なし') + saved;
+  }
+
   // 前回の録画のなめらかさ（調査用の表示）
   function lastRecInfo() {
     var r = state.lastRec;
@@ -1212,7 +1296,8 @@
       '・記録コマ数: ' + f1(r.fps) + 'コマ/秒（カメラ ' + (r.camFps ? f1(r.camFps) : '不明') + '／設定 ' + (r.camRate ? Math.round(r.camRate) : '不明') + '）\n' +
       '・コマの遅れ: 50ms超 ' + r.late50 + '回／100ms超 ' + r.late100 + '回／最長 ' + Math.round(r.maxGap) + 'ms\n' +
       '・取りこぼし: ' + (r.viaVfc ? r.skipped + 'コマ' : '計測不可') + '／合成の負荷: 平均 ' + f1(r.avgCost) + 'ms・最大 ' + f1(r.maxCost) + 'ms\n' +
-      '・方式: ' + (r.viaVfc ? 'フレーム通知' : '画面更新') + '／' + f1(r.mbps) + 'Mbps／' + r.chunks + '分割／' + r.mime;
+      '・方式: ' + (r.viaVfc ? 'フレーム通知' : '画面更新') + '／' + f1(r.mbps) + 'Mbps／' + r.chunks + '分割／' + r.mime + '\n' +
+      '・仕上げ: ' + convInfo(r.conv);
   }
 
   function showInfo() {

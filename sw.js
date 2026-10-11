@@ -6,7 +6,7 @@
  *  - 保存するのはアプリ本体の小さなファイルだけ。撮影した写真・動画は一切キャッシュしない
  */
 var CACHE = 'ggc-shell-v1';
-var SHELL = ['./', 'index.html', 'style.css', 'config.js', 'app.js', 'manifest.webmanifest',
+var SHELL = ['./', 'index.html', 'style.css', 'config.js', 'mp4fix.js', 'app.js', 'manifest.webmanifest',
   'icon-180.png', 'icon-192.png', 'icon-512.png'];
 var CACHEABLE = /(\/|\.html|\.css|\.js|\.png|\.jpg|\.jpeg|\.webp|\.webmanifest)$/i;
 var TIMEOUT_MS = 4000;
