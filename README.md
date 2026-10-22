@@ -109,7 +109,7 @@ GitHub で `config.js` を開き、鉛筆マークで編集 →「Commit changes
 | `logo.maxHeightRatio` | `0.20` | ロゴの高さの上限 |
 | `logo.marginRatio` | `0.035` | 端からの余白 |
 | `logo.opacity` | `1` | 透明度（0.5 で半透明） |
-| `video.width / height` | `1920 / 1080` | 希望解像度（iPhone が対応する範囲で自動調整） |
+| `video.width / height` | `1920 / 1080` | 希望解像度（iPhone が対応する範囲で自動調整）。4K を試す場合は `3840 / 2160`（非対応の機種では 1080p になる。コマ落ち・発熱が増える可能性あり） |
 | `video.frameRate` | `30` | 希望フレームレート |
 | `video.captureEveryFrame` | `true` | 画面に描いたコマをすべて記録する。`false` にすると以前の方式（`frameRate` の時計に合ったコマだけ記録）に戻る |
 | `video.bitsPerSecond` | `10000000` | 画質（10Mbps） |
